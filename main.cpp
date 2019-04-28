@@ -17,19 +17,16 @@
 using namespace std;
 #define SOCK int
 const int useport=80,bufsize=1000;
-const char myserverip[]="62.234.151.216";
 const string pagebreak="\n------------------------------------------------\n";
 struct waitnode{
 	sockaddr addr;
 	SOCK connfd;
 };
-queue<waitnode> sockq;
-int ka_now=0;
+struct timeval timeout={0,1000*100};
 
-void send_keep_alive(SOCK connfd,string strrecv);
-void take_request();
-void take_file(SOCK connfd,string strrecv,bool is_ka);
-void server_static(SOCK connfd,ifstream& fin,string& filepath,bool is_ka);
+void take_request(SOCK connfd);
+void take_file(SOCK connfd,string& strrecv);
+void server_static(SOCK connfd,ifstream& fin,string& filepath);
 string itoa(int i);
 void send_error(SOCK connfd,string& answer);
 void get_filetype(string& filepath,string& filetype);
@@ -37,6 +34,7 @@ void read_request(string& todo,string& answer,string& filepath);
 void server_initial(int&);
 int recv_write(SOCK connfd,string& dest);
 void clienterror(string& dest,string code,string shortmsg,string longmsg);
+void set_recv_tout(SOCK connfd);
 
 int main()
 {
@@ -44,119 +42,59 @@ int main()
 	server_initial(s_listen);
 	sockaddr clientaddr;
 	unsigned clientaddrlen=sizeof(clientaddr);
-	int connfd;
-	thread doit_thread(take_request);
-	doit_thread.detach();
 	printf("listen..\n");
+	int connfd;
 	while ((connfd=accept(s_listen,(sockaddr*)&clientaddr,&clientaddrlen))>0)
 	{
-		printf("new acc..\n");
-		sockq.push(waitnode{clientaddr,connfd});
-		printf("wait for next client...\n");
+		take_request(connfd);
 	}
 	printf("warning:listen terminated\n");
 return 0;
 }
 
 /*in another thread*/
-void take_request()
+void take_request(SOCK connfd)
 {
-	printf("doweb thread now\n");
-	while (1)
-	{
-		if (sockq.empty())	continue;
-		waitnode now=sockq.front();sockq.pop();
-		SOCK connfd=now.connfd;
-		sockaddr sa=now.addr;
-		string strrecv;
-		/*read request*/
-		recv_write(connfd,strrecv);
-		
-		cout<<"string recv:"<<endl<<strrecv<<pagebreak;
-		
-		//todo: should I handle keep-alive?
-		//answer:Yes! 
-		/*find connection header*/
-		int lheader=strrecv.find("Connection:"),rheader=strrecv.find("\r\n",lheader);
-		
-		
-		if (strrecv.find("keep-alive",lheader)!=string::npos){
-			cout<<"client ask for keep-alive!"<<pagebreak;
-			thread ka_thread(send_keep_alive,connfd,strrecv);
-			ka_thread.detach();
-			ka_now++;
-		}
-		else{
-			cout<<"client just want one file"<<pagebreak;
-			take_file(connfd,strrecv,false);
-			
-			/*shutdown() is needed:close() only close socket
-			 *in this thread,socket main thread is not closed,
-			 *while shutdown close socket in all thread.
-			 */
-			shutdown(connfd,SHUT_RDWR);	//shut both write and read
-			//close(connfd);
-		}
-	}
-	printf("warning:doweb thread ended\n");
-}
-
-void send_keep_alive(SOCK connfd,string strrecv)
-{
-	/*now strrecv contain first request*/
-	take_file(connfd,strrecv,true);
-	strrecv.clear();
+	string strrecv;
+	/*read request*/
+	recv_write(connfd,strrecv);
+	cout<<"string recv:"<<endl<<strrecv<<pagebreak;	
+	take_file(connfd,strrecv);
 	
-	/*to avoid too long connection,
-	 *set timeout 10 seconds in recv.
+	/*shutdown() is needed:close() only close socket
+	 *in this thread,socket main thread is not closed,
+	 *while shutdown close socket in all thread.
 	 */
-	struct timeval timeout={1,0};
-	int ret=setsockopt(connfd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&timeout,sizeof(timeout));
-	if (ret<0){
-		cout<<"wrong setsockopt recv";
-		perror("setsockopt");
-		cout<<pagebreak;
-	}
-	int filecnt=1; 
-	while (1)
-	{
-		if (recv_write(connfd,strrecv)<=0){
-			cout<<"I think client closed connection.\
-			Let's shutdown() socket too."<<pagebreak;
-			shutdown(connfd,SHUT_RDWR);
-			break;
-		}
-		else{
-			take_file(connfd,strrecv,true);
-		}
-		filecnt++;
-	}
-	ka_now--;
-	cout<<"a keep-alive thread is over!this thread send "<<filecnt<<"files."<<endl;
-	cout<<"now "<<ka_now<<" keep-alive threads exist."<<pagebreak;
+	shutdown(connfd,SHUT_RDWR);	//shut both write and read
+	//close(connfd);
+	
 }
 
-void take_file(SOCK connfd,string strrecv,bool is_ka)
+void take_file(SOCK connfd,string& strrecv)
 {
 	/*parse string recved and check file*/
 	string filepath,answer;
 	read_request(strrecv,answer,filepath);
-	
 	cout<<"request filepath:"<<endl<<filepath<<pagebreak;
-	
-	ifstream fin(filepath);
+	ifstream fin;
+	fin.open(filepath); 
 	/*file cannot be fetch*/
-	if (answer.empty()&&!fin.is_open())
-		clienterror(answer,"404","Not found","Tiny couldn't find the file");
+	if (answer.empty()&&!fin.is_open()){
+		sleep(1);
+		fin.open(filepath);
+		if (!fin.is_open())
+			clienterror(answer,"404","Oops£¡","TinyServerÕýÃ¦£¡\nÇëË¢ÐÂ±¾Ò³Ãæ£¬»ò¼ì²éURLÊÇ·ñÕýÈ·¡£\n(x_x)\n");
+	}
 	/*success*/
 	if (fin.is_open()&&!filepath.empty()){
 		cout<<"prepare static content.."<<pagebreak;
-		server_static(connfd,fin,filepath,is_ka);
+		server_static(connfd,fin,filepath);
 	}
 	else{
 		cout<<"wrong request,reply about error"<<pagebreak;
 		send(connfd,answer.c_str(),answer.size(),0);
 	}
+	if (fin.is_open())	fin.close(); 
 }
 
 void clienterror(string& dest,string code,string shortmsg,string longmsg)
@@ -168,7 +106,7 @@ void clienterror(string& dest,string code,string shortmsg,string longmsg)
 	dest+="<hr><em>The Tiny Web Server</em>\r\n";
 }
 
-void server_static(SOCK connfd,ifstream& fin,string& filepath,bool is_ka)
+void server_static(SOCK connfd,ifstream& fin,string& filepath)
 {
 	string output,filetype,text;
 	get_filetype(filepath,filetype);
@@ -182,8 +120,7 @@ void server_static(SOCK connfd,ifstream& fin,string& filepath,bool is_ka)
 	output+="HTTP/1.0 200 OK\r\n";
 	output+="Server:Tiny web server\r\n";
 	/*short connect or keep-alive?*/
-	if (!is_ka)	output+="Connection:close\r\n";
-	else		output+="Connection:keep-alive\r\n";
+	output+="Connection:close\r\n";
 	output+="Content-length:"+itoa(text.size())+"\r\n";
 	output+="Content-type:"+filetype+"\r\n\r\n";
 	output+=text;
@@ -218,6 +155,7 @@ void get_filetype(string& filepath,string& filetype)
 
 void read_request(string& todo,string& answer,string& filepath)
 {
+	if (todo.empty())	return;
 	int lbound=todo.find("GET");
 	if (lbound==string::npos){
 		clienterror(answer,"501","Not implemented","Tiny doesn't implement this method");
@@ -233,22 +171,35 @@ void read_request(string& todo,string& answer,string& filepath)
 	return;
 }
 
+void set_recv_tout(SOCK connfd)
+{
+	int ret=setsockopt(connfd,SOL_SOCKET,SO_RCVTIMEO,(const char*)&timeout,sizeof(timeout));
+	if (ret<0){
+		cout<<"wrong setsockopt recv";
+		perror("setsockopt");
+		cout<<pagebreak;
+	}
+}
+
 int recv_write(SOCK connfd,string& dest)
 {
 	int len,recv_size=0;
 	char tbuf[bufsize];
 	memset(tbuf,0,sizeof(tbuf));
 	dest.clear();
+	
+	set_recv_tout(connfd);
+	
 	while ((len=recv(connfd,tbuf,bufsize-1,0))>0)
 	{
 		printf("%d\n",len);
 		string tmp(tbuf,len);
 		dest+=tmp;
 		recv_size+=len;
-		if (dest.find("\r\n\r\n",max(len-2*bufsize,0))!=string::npos){
+		/*here changed!!!*/ 
+		if (dest.find("\r\n\r\n",max(recv_size-2*bufsize,0))!=string::npos){
 			break;
 		}
-		
 	}
 	if (len<0){
 		cout<<"wrong recv.";
