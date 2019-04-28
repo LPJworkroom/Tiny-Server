@@ -13,18 +13,25 @@
 #include<queue>
 #include<vector>
 #include<thread>
+#include<algorithm>
 #include<sstream>	//alternate of itoa&&atoi
 using namespace std;
 #define SOCK int
-const int useport=80,bufsize=1000;
+const int useport=80,bufsize=10000;
 const string pagebreak="\n------------------------------------------------\n";
+string mobiles[7]={"android","webos","iphone","ipod","blackberry","iemobile","opera mini"};
 struct waitnode{
 	sockaddr addr;
 	SOCK connfd;
 };
 struct timeval timeout={0,1000*100};
 
-void take_request(SOCK connfd);
+queue<SOCK> sockq;	//store recved request socket
+
+
+bool ismobile(string& todo);
+char mytolower(char a);
+void take_request();
 void take_file(SOCK connfd,string& strrecv);
 void server_static(SOCK connfd,ifstream& fin,string& filepath);
 string itoa(int i);
@@ -43,31 +50,35 @@ int main()
 	sockaddr clientaddr;
 	unsigned clientaddrlen=sizeof(clientaddr);
 	printf("listen..\n");
+	
+	thread doweb(take_request);
+	doweb.detach();
+	
 	int connfd;
 	while ((connfd=accept(s_listen,(sockaddr*)&clientaddr,&clientaddrlen))>0)
 	{
-		take_request(connfd);
+		sockq.push(connfd);
 	}
 	printf("warning:listen terminated\n");
 return 0;
 }
 
 /*in another thread*/
-void take_request(SOCK connfd)
+void take_request()
 {
-	string strrecv;
-	/*read request*/
-	recv_write(connfd,strrecv);
-	cout<<"string recv:"<<endl<<strrecv<<pagebreak;	
-	take_file(connfd,strrecv);
-	
-	/*shutdown() is needed:close() only close socket
-	 *in this thread,socket main thread is not closed,
-	 *while shutdown close socket in all thread.
-	 */
-	shutdown(connfd,SHUT_RDWR);	//shut both write and read
-	//close(connfd);
-	
+	while (1)
+	{
+		if (sockq.empty()){
+			usleep(1000*100);
+			continue;
+		}
+		int connfd=sockq.front();sockq.pop();
+		string strrecv;
+		recv_write(connfd,strrecv);
+		cout<<"string recv:"<<endl<<strrecv<<pagebreak;	
+		take_file(connfd,strrecv);
+		close(connfd);
+	}
 }
 
 void take_file(SOCK connfd,string& strrecv)
@@ -83,7 +94,7 @@ void take_file(SOCK connfd,string& strrecv)
 		sleep(1);
 		fin.open(filepath);
 		if (!fin.is_open())
-			clienterror(answer,"404","Oops£¡","TinyServerÕýÃ¦£¡\nÇëË¢ÐÂ±¾Ò³Ãæ£¬»ò¼ì²éURLÊÇ·ñÕýÈ·¡£\n(x_x)\n");
+			clienterror(answer,"404","Oops！","TinyServer正忙！\n请刷新本页面，或检查URL是否正确。\n(x_x)\n");
 	}
 	/*success*/
 	if (fin.is_open()&&!filepath.empty()){
@@ -161,14 +172,39 @@ void read_request(string& todo,string& answer,string& filepath)
 		clienterror(answer,"501","Not implemented","Tiny doesn't implement this method");
 		return;
 	}
-	//lbound+=strlen("GET");
 	lbound=todo.find('/',lbound);
 	int rbound=todo.find(' ',lbound);
-	filepath='.';
 	filepath+=todo.substr(lbound,rbound-lbound);
-	/*default: index*/
+	/*default: index
+	 *special check for mobile agent
+	 */ 
 	if (filepath.back()=='/')	filepath+="index.html";
+	if (ismobile(todo))	filepath="./mobile"+filepath;
+	else				filepath="."+filepath;
 	return;
+}
+
+bool ismobile(string& todo)
+{	
+	string tmp=todo;
+	int l=tmp.find("User-Agent:"),r=tmp.find("\r\n",l);
+	tmp=tmp.substr(l,r-l);
+	transform(tmp.begin(),tmp.end(),tmp.begin(),mytolower);
+	cout<<"transformed string:"<<tmp<<pagebreak;
+	for (int i=0;i<7;i++)
+	{
+		if (tmp.find(mobiles[i])!=string::npos){
+		//	cout<<"clinet is using "<<mobiles[i]<<pagebreak;
+			return true;
+		}
+	}
+	return false;
+}
+
+char mytolower(char a)
+{
+	if (a>='A'&&a<='Z')	return (a+('a'-'A'));
+	return a;
 }
 
 void set_recv_tout(SOCK connfd)
@@ -190,16 +226,21 @@ int recv_write(SOCK connfd,string& dest)
 	
 	set_recv_tout(connfd);
 	
-	while ((len=recv(connfd,tbuf,bufsize-1,0))>0)
+	while ((len=recv(connfd,tbuf,bufsize-1,0))>=0)
 	{
 		printf("%d\n",len);
+		if (len==0){
+			cout<<"I think client closed connection."<<pagebreak;
+	//		close(connfd);
+			break;
+		}
 		string tmp(tbuf,len);
 		dest+=tmp;
 		recv_size+=len;
-		/*here changed!!!*/ 
 		if (dest.find("\r\n\r\n",max(recv_size-2*bufsize,0))!=string::npos){
 			break;
 		}
+		
 	}
 	if (len<0){
 		cout<<"wrong recv.";
@@ -207,7 +248,7 @@ int recv_write(SOCK connfd,string& dest)
 		cout<<pagebreak;
 		return len;
 	}
-	printf("over.recv size:%d\n",len);
+	printf("over.recv size:%d\n",recv_size);
 	return recv_size;
 }
 
