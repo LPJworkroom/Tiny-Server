@@ -1,2 +1,2 @@
 # Tiny-Server
-A really tiny,weak but valid HTTP server program for linux.
+A really tiny,weak but valid HTTP server program on linux.
