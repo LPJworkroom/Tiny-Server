@@ -17,7 +17,7 @@
 using namespace std;
 #define SOCK int
 const int useport=80,bufsize=1000;
-const char myserverip[]="62.234.151.216";
+const char myserverip[]="127.0.0.1";
 const string pagebreak="\n------------------------------------------------\n";
 
 void doweb(SOCK connfd);
